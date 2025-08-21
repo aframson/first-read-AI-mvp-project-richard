@@ -97,8 +97,8 @@ export default function Home() {
   const [leftOpen, setLeftOpen] = useState(false);
 
   const [pages, setPages] = useState(0);
-  const pageBreaksRef = useRef(0);
-  const lastPageEstRef = useRef(0);
+  let pageBreaksRef = useRef(0);
+  let lastPageEstRef = useRef(0);
 
   const [targetPages, setTargetPages] = useState(10);
   const MIN_ALLOWED_PAGES = 3;
