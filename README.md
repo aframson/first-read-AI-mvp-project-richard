@@ -1,16 +1,15 @@
 # FirstRead AI Contract Generator
 
 ## Overview
-
 FirstRead is an MVP AI-native contract generator. Users can enter a plain language description of their business context, and the system streams back a **production-ready, styled HTML contract** of 10+ pages, aligned to the request.
 
 The app is designed with **real-time streaming**, **AWS serverless scalability**, and **frontend responsiveness** in mind.
 
 ![1755803310986](images/UPDATED_README/1755803310986.png)
-
 ![1755803363609](images/UPDATED_README/1755803363609.png)
-
 ![1755803438529](images/UPDATED_README/1755803438529.png)
+
+---
 
 ## Folder Structure
 
@@ -27,12 +26,13 @@ The repository is organized as follows:
 │   └── README.md           # Backend-specific notes
 │
 ├── app/                    # Next.js frontend (Vercel-ready)
-│  
 │   ├── page.js             # Main UI (editor, streaming, history)
 │   └── layout.js           # Root layout
+│
 ├── lib/
 │   └── ws.js               # WebSocket connection helper
-└── public/
+│
+├── public/
 │   └── logo.svg            # Branding logo
 │
 ├── README.md               # Main project documentation
@@ -46,14 +46,13 @@ This structure separates backend (serverless AI generation pipeline) from fronte
 ## Features
 
 - **Backend (AWS Lambda via SAM):**
-
   - Streaming AI completions via OpenAI
   - Contract generation with enforced depth and structure
   - Handles token limits, retries, and presigned S3 links
   - Stores completed contracts in S3
   - API Gateway WebSocket for real-time streaming
+  - **Production challenges handled:** token limits, API failures, and latency managed via serverless design and retries
 - **Frontend (Next.js):**
-
   - Minimal, responsive UI with textarea, generate/stop, and preview panel
   - Contract streaming with live pagination
   - History rail with saved contracts (S3 presigned fetch) and stored using local-storage since there is no auth
@@ -64,7 +63,8 @@ This structure separates backend (serverless AI generation pipeline) from fronte
 
 ## Page Logic in Backend
 
-One of the **core requirements** is that each generated contract must be **10+ pages**.To achieve this, the backend implements **page logic** that maps token/word counts to pages and enforces exact page boundaries.
+One of the **core requirements** is that each generated contract must be **10+ pages**.  
+To achieve this, the backend implements **page logic** that maps token/word counts to pages and enforces exact page boundaries.
 
 - **Words per page:** The backend uses a constant of ~350 words per page (`WORDS_PER_PAGE=350`).
 - **Target pages:** By default, the system generates at least **10 pages**, but users can select between 3–40 pages via the UI.
@@ -73,7 +73,7 @@ One of the **core requirements** is that each generated contract must be **10+ p
   - If markers are missing, the backend heuristically inserts breaks every ~350 words.
   - If the output is shorter than requested pages, a continuation request (appendices) is triggered.
   - If the output exceeds requested pages, it is trimmed to the target count.
-- **Font considerations:** The font size and line spacing are standardized in the backend CSS (`11pt/1.5` for HTML, `10.5pt/1.45` for Word export).
+- **Font considerations:** The font size and line spacing are standardized in the backend CSS (`11pt/1.5` for HTML, `10.5pt/1.45` for Word export).  
   This ensures that the **350 words per page approximation matches the actual printed/Word layout**, making page counts consistent with the 10+ page requirement.
 
 This ensures contracts are **long enough** to meet legal detail requirements, while respecting the user’s requested length.
@@ -126,7 +126,7 @@ These are injected into the frontend via environment variables.
 
 ### Frontend (Next.js)
 
-inside the root directory 
+Inside the root directory:
 
 ```bash
 npm install
@@ -151,6 +151,7 @@ Deployable to Vercel or Amplify.
    ```
    Draft Terms of Service for a cloud cyber SaaS company based in New York
    ```
+
 3. Click **Generate**. The contract streams into the right-hand pane.
 4. Use the **Download** button to export as `.doc`.
 
