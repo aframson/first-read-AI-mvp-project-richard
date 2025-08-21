@@ -8,7 +8,6 @@ The app is designed with **real-time streaming**, **AWS serverless scalability**
 
 ![1755803310986](images/UPDATED_README/1755803310986.png)
 
-
 ![1755803363609](images/UPDATED_README/1755803363609.png)
 
 ![1755803438529](images/UPDATED_README/1755803438529.png)
@@ -27,14 +26,14 @@ The repository is organized as follows:
 │   ├── template.yaml       # SAM template (defines Lambda, S3, API Gateway, IAM roles)
 │   └── README.md           # Backend-specific notes
 │
-├── frontend/               # Next.js frontend (Vercel-ready)
-│   ├── app/
-│   │   ├── page.js         # Main UI (editor, streaming, history)
-│   │   └── layout.js       # Root layout
-│   ├── lib/
-│   │   └── ws.js           # WebSocket connection helper
-│   └── public/
-│       └── logo.svg        # Branding logo
+├── app/                    # Next.js frontend (Vercel-ready)
+│  
+│   ├── page.js             # Main UI (editor, streaming, history)
+│   └── layout.js           # Root layout
+├── lib/
+│   └── ws.js               # WebSocket connection helper
+└── public/
+│   └── logo.svg            # Branding logo
 │
 ├── README.md               # Main project documentation
 └── package.json            # Root dependencies and scripts
@@ -57,7 +56,7 @@ This structure separates backend (serverless AI generation pipeline) from fronte
 
   - Minimal, responsive UI with textarea, generate/stop, and preview panel
   - Contract streaming with live pagination
-  - History rail with saved contracts (S3 presigned fetch) and stored using local-storage since there is no auth 
+  - History rail with saved contracts (S3 presigned fetch) and stored using local-storage since there is no auth
   - Download button exports contracts directly to **Word (.doc)** format
   - Suggestions grid for common contract types
 
@@ -127,8 +126,9 @@ These are injected into the frontend via environment variables.
 
 ### Frontend (Next.js)
 
+inside the root directory 
+
 ```bash
-cd frontend
 npm install
 npm run dev
 ```
