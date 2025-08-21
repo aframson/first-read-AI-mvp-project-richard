@@ -2,24 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { connectWS } from "../lib/ws";
-import {
-  History,
-  Play,
-  Square,
-  Download,
-  Loader2,
-  X
-} from "lucide-react";
+import { History, Play, Square, Download, Loader2, X } from "lucide-react";
 import Image from "next/image";
 
 /** Sandboxed HTML renderer using Shadow DOM to prevent style bleed */
 function ShadowHTML({ html }) {
   const hostRef = useRef(null);
-
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-
     if (!host.shadowRoot) {
       host.attachShadow({ mode: "open" });
       const style = document.createElement("style");
@@ -39,10 +30,8 @@ function ShadowHTML({ html }) {
       host.shadowRoot.appendChild(container);
       host._container = container;
     }
-
     if (host._container) host._container.innerHTML = html || "";
   }, [html]);
-
   return <div ref={hostRef} style={{ contain: "content" }} />;
 }
 
@@ -64,41 +53,63 @@ function summarizePrompt(p = "") {
   return (words.slice(0, 10).join(" ") + (words.length > 10 ? "…" : "")).trim();
 }
 
+/** Lightweight skeleton doc (headline bar + multiple lines) */
+function PreStreamSkeleton() {
+  return (
+    <div className="animate-pulse">
+      {/* fake title */}
+      <div className="h-5 w-2/3 rounded bg-slate-200/90 mb-4" />
+      {/* fake paragraphs */}
+      {Array.from({ length: 22 }).map((_, i) => (
+        <div
+          key={i}
+          className="h-3 rounded bg-slate-200/80 mb-2"
+          style={{ width: `${90 - (i % 6) * 8}%` }}
+        />
+      ))}
+      {/* fake page-break indicator */}
+      <div className="page-break my-6" />
+      {Array.from({ length: 16 }).map((_, i) => (
+        <div
+          key={`b-${i}`}
+          className="h-3 rounded bg-slate-200/80 mb-2"
+          style={{ width: `${92 - (i % 7) * 7}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function Home() {
   const [prompt, setPrompt] = useState(
     "Draft Terms of Service for a cloud cyber SaaS company based in New York."
   );
-  const [html, setHtml] = useState(""); // sanitized, display-capped fragment (draft stream/history)
-  const [status, setStatus] = useState("idle"); // "idle" | "connected" | "starting" | "generating" | "complete" | "stopped" | "error" | "disconnected"
+  const [html, setHtml] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | connected | starting | generating | complete | stopped | error | disconnected
   const [downloadUrl, setDownloadUrl] = useState(null);
 
   const [history, setHistory] = useState([]); // [{ key, s3Url, prompt, name, ts }]
-  const [selected, setSelected] = useState(null); // selected history item
-  const [docTitle, setDocTitle] = useState("Document"); // visible in header
+  const [selected, setSelected] = useState(null);
+  const [docTitle, setDocTitle] = useState("Document");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [paneClosed, setPaneClosed] = useState(false);
 
-  // collapsible history rail
   const [leftOpen, setLeftOpen] = useState(false);
 
-  // live pages
   const [pages, setPages] = useState(0);
   const pageBreaksRef = useRef(0);
   const lastPageEstRef = useRef(0);
 
-  // target pages
   const [targetPages, setTargetPages] = useState(10);
   const MIN_ALLOWED_PAGES = 3;
   const MAX_ALLOWED_PAGES = 40;
 
   const WORDS_PER_PAGE = 350;
 
-  // stall indicator (drafting)
   const [stalled, setStalled] = useState(false);
   const lastDeltaAtRef = useRef(0);
   const STALL_MS = 1500;
 
-  // suggestions
   const suggestions = [
     "Draft an NDA between SaaS firms",
     "Consulting agreement (hourly)",
@@ -110,21 +121,22 @@ export default function Home() {
   const textareaRef = useRef(null);
   const docScrollRef = useRef(null);
 
-  // streaming sanitizer state
-  const blockedTagRef = useRef(null); // null | "style" | "script" | "head"
+  const blockedTagRef = useRef(null);
 
-  // auto-scroll control
   const shouldAutoScrollRef = useRef(true);
   const rafScrollScheduled = useRef(false);
 
-  // right pane visibility
+  // streaming + skeleton state
   const isStreaming = status === "starting" || status === "generating";
-  const noTokensYet = isStreaming && html.trim().length === 0;
+  const noTokensYet = html.trim().length === 0;
+  const showPreStreamSkeleton = isStreaming && noTokensYet;
+
+  // pane visibility
   const paneHasContent = isStreaming || html.trim().length > 0 || !!selected;
   const paneVisible = !paneClosed && paneHasContent;
 
-  // widths (INCREASED)
-  const RIGHT_W = 840; // was 720
+  // widths
+  const RIGHT_W = 840;
   const LEFT_OPEN_W = 256;
   const LEFT_CLOSED_W = 48;
 
@@ -207,21 +219,21 @@ export default function Home() {
     const sanitized = streamSanitize(chunk);
     const parts = sanitized.split("<!--PAGE_BREAK-->");
     const breaksInChunk = parts.length - 1;
-    const allowedBreaksRemaining = Math.max(0, targetPages - 1 - pageBreaksRef.current);
-    if (allowedBreaksRemaining <= 0) return "";
-
-    const usedBreaks = Math.min(breaksInChunk, allowedBreaksRemaining);
-    let rebuilt = parts[0];
-    for (let i = 1; i <= usedBreaks; i++) {
-      rebuilt += '<div class="page-break"></div>' + parts[i];
+    theAllowed: {
+      const allowedBreaksRemaining = Math.max(0, targetPages - 1 - pageBreaksRef.current);
+      if (allowedBreaksRemaining <= 0) return "";
+      const usedBreaks = Math.min(breaksInChunk, allowedBreaksRemaining);
+      let rebuilt = parts[0];
+      for (let i = 1; i <= usedBreaks; i++) {
+        rebuilt += '<div class="page-break"></div>' + parts[i];
+      }
+      if (breaksInChunk <= allowedBreaksRemaining) {
+        rebuilt += parts.slice(usedBreaks + 1).join("");
+      }
+      pageBreaksRef.current += usedBreaks;
+      setPages((p) => Math.max(p, pageBreaksRef.current + 1));
+      return rebuilt;
     }
-    if (breaksInChunk <= allowedBreaksRemaining) {
-      rebuilt += parts.slice(usedBreaks + 1).join("");
-    }
-
-    pageBreaksRef.current += usedBreaks;
-    setPages((p) => Math.max(p, pageBreaksRef.current + 1));
-    return rebuilt;
   }
 
   /** Sanitize full saved HTML doc (history) */
@@ -251,11 +263,8 @@ export default function Home() {
           if (add) {
             setHtml((prev) => {
               const next = prev + add;
-
-              // opportunistic title update
               const maybe = extractTitleFromHtml(next);
               if (maybe && maybe !== docTitle) setDocTitle(maybe);
-
               const approx = Math.max(1, Math.floor(countWords(next) / WORDS_PER_PAGE) + 1);
               if (approx > lastPageEstRef.current) {
                 lastPageEstRef.current = approx;
@@ -264,11 +273,8 @@ export default function Home() {
               return next;
             });
           }
-
           lastDeltaAtRef.current = Date.now();
           setStalled(false);
-
-          // cap visible pages
           if (pageBreaksRef.current >= targetPages - 1) {
             try {
               socketRef.current?.close(4001, "target-pages-reached");
@@ -290,9 +296,7 @@ export default function Home() {
           setStatus("complete");
           setStalled(false);
           setDownloadUrl(msg.s3Url || null);
-
-          const derivedName =
-            extractTitleFromHtml(html) || summarizePrompt(prompt) || "Contract";
+          const derivedName = extractTitleFromHtml(html) || summarizePrompt(prompt) || "Contract";
           if (msg.key) {
             const item = {
               key: msg.key,
@@ -319,7 +323,6 @@ export default function Home() {
             return next;
           });
           setPreviewLoading(false);
-
           if (msg.s3Url && selected?.key === msg.key) {
             try {
               const res = await fetch(msg.s3Url, { cache: "no-store" });
@@ -327,7 +330,6 @@ export default function Home() {
               const text = await res.text();
               const clean = sanitizeSavedHtmlDoc(text);
               setHtml(clean);
-
               const title = extractTitleFromHtml(text) || extractTitleFromHtml(clean);
               if (title) {
                 setDocTitle(title);
@@ -428,10 +430,10 @@ export default function Home() {
   function start() {
     // reset drafting stream
     setHtml("");
-    setStatus("starting");
+    setStatus("starting"); // ensures showPreStreamSkeleton === true immediately
     setDownloadUrl(null);
     setSelected(null);
-    setPaneClosed(false);
+    setPaneClosed(false); // open pane so skeleton is visible
     setDocTitle("Document");
     shouldAutoScrollRef.current = true;
 
@@ -469,7 +471,6 @@ export default function Home() {
   async function openFromHistory(it) {
     setSelected(it);
     setPaneClosed(false);
-
     setHtml("");
     setStatus("idle");
     setPreviewLoading(true);
@@ -477,7 +478,7 @@ export default function Home() {
 
     setPages(0);
     pageBreaksRef.current = 0;
-    lastPageEstRef.current = 0;
+    lastPageEstRef = { current: 0 };
     blockedTagRef.current = null;
     setStalled(false);
     setDocTitle(it.name || "Document");
@@ -590,22 +591,11 @@ export default function Home() {
     <div className="h-screen bg-white text-slate-900">
       {/* globals */}
       <style jsx global>{`
-        .hide-scrollbar::-webkit-scrollbar {
-          display: none;
-        }
-        .hide-scrollbar {
-          -ms-overflow-style: none;
-          scrollbar-width: none;
-        }
-        .page-break {
-          border-top: 1px dashed #e5e7eb;
-          margin: 28px 0;
-        }
-        @media print {
-          .page-break {
-            page-break-after: always;
-          }
-        }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .page-break { border-top: 1px dashed #e5e7eb; margin: 28px 0; }
+        @media print { .page-break { page-break-after: always; } }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
       `}</style>
 
       {/* LEFT rail */}
@@ -703,7 +693,7 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Hero (kept minimal – no visible planning) */}
+        {/* Hero (kept minimal) */}
         <main className="mx-auto max-w-3xl px-5">
           <div className="w-full flex items-start justify-center mt-16 mb-24">
             <div className="text-center text-slate-500 mt-[20vh]">
@@ -774,7 +764,9 @@ export default function Home() {
                       onChange={(e) => {
                         const n = parseInt(e.target.value || "0", 10);
                         if (!Number.isNaN(n)) {
-                          setTargetPages(Math.min(MAX_ALLOWED_PAGES, Math.max(MIN_ALLOWED_PAGES, n)));
+                          setTargetPages(
+                            Math.min(MAX_ALLOWED_PAGES, Math.max(MIN_ALLOWED_PAGES, n))
+                          );
                         }
                       }}
                       className="w-12 text-center text-[12px] outline-none py-1"
@@ -814,10 +806,7 @@ export default function Home() {
             </div>
 
             <div className="mt-2 text-center text-[11px] text-slate-500">
-              WS:{" "}
-              <code className="font-mono">
-                {process.env.NEXT_PUBLIC_WS_URL || "MISSING_WS_URL"}
-              </code>
+              WS: <code className="font-mono">{process.env.NEXT_PUBLIC_WS_URL || "MISSING_WS_URL"}</code>
             </div>
           </div>
         </div>
@@ -838,7 +827,9 @@ export default function Home() {
             <span className="font-medium truncate max-w-[60%]">{docTitle}</span>
             <div className="flex items-center gap-3">
               <span className="inline-flex items-center gap-2 text-xs text-slate-600">
-                {status === "starting" && <Loader2 size={14} className="animate-spin" />}
+                {(status === "starting" || status === "generating") && (
+                  <Loader2 size={14} className="animate-spin" />
+                )}
                 {status}
               </span>
               <span
@@ -862,8 +853,10 @@ export default function Home() {
           <div className="px-5 pt-2">
             <div className="h-1 w-full rounded bg-slate-100 overflow-hidden">
               <div
-                className="h-full bg-blue-500 transition-[width] duration-300"
-                style={{ width: `${progressPct}%` }}
+                className={`h-full transition-[width] duration-300 ${
+                  showPreStreamSkeleton ? "bg-slate-200 animate-pulse" : "bg-blue-500"
+                }`}
+                style={{ width: showPreStreamSkeleton ? "35%" : `${progressPct}%` }}
               />
             </div>
           </div>
@@ -871,24 +864,18 @@ export default function Home() {
           <div
             ref={docScrollRef}
             onScroll={onRightPaneScroll}
-            className={`relative flex-1 overflow-auto p-6 pb-24 ${
-              isStreaming && noTokensYet
+            className={`relative flex-1 overflow-auto p-6 pb-24 hide-scrollbar ${
+              showPreStreamSkeleton
                 ? "bg-gradient-to-r from-white via-[#f7f9ff] to-white bg-[length:200%_100%] animate-[shimmer_1.6s_linear_infinite]"
                 : "bg-white"
-            } hide-scrollbar`}
+            }`}
             style={{ scrollbarGutter: "stable", contain: "layout paint size" }}
             aria-live="polite"
           >
-            {(isStreaming && noTokensYet) || (selected && previewLoading) ? (
-              <div className="animate-pulse space-y-3">
-                {Array.from({ length: 35 }).map((_, i) => (
-                  <div
-                    key={i}
-                    className="h-3 rounded bg-slate-200/80"
-                    style={{ width: `${92 - (i % 7) * 8}%` }}
-                  />
-                ))}
-              </div>
+            {showPreStreamSkeleton ? (
+              <PreStreamSkeleton />
+            ) : (selected && previewLoading) ? (
+              <PreStreamSkeleton />
             ) : (
               <>
                 {html.trim().length > 0 && <ShadowHTML html={html} />}
@@ -900,7 +887,7 @@ export default function Home() {
                   </div>
                 )}
 
-                {isStreaming && !noTokensYet && (
+                {isStreaming && html.trim().length > 0 && (
                   <div className="absolute right-6 bottom-6 h-5 w-[2px] bg-slate-800/70 animate-[blink_1s_steps(2,start)_infinite] pointer-events-none" />
                 )}
 
