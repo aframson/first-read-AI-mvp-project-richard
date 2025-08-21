@@ -1,6 +1,7 @@
 # FirstRead AI Contract Generator
 
 ## Overview
+
 FirstRead is an MVP AI-native contract generator. Users can enter a plain language description of their business context, and the system streams back a **production-ready, styled HTML contract** of 10+ pages, aligned to the request.
 
 The app is designed with **real-time streaming**, **AWS serverless scalability**, and **frontend responsiveness** in mind.
@@ -63,8 +64,7 @@ This structure separates backend (serverless AI generation pipeline) from fronte
 
 ## Page Logic in Backend
 
-One of the **core requirements** is that each generated contract must be **10+ pages**.  
-To achieve this, the backend implements **page logic** that maps token/word counts to pages and enforces exact page boundaries.
+One of the **core requirements** is that each generated contract must be **10+ pages**.To achieve this, the backend implements **page logic** that maps token/word counts to pages and enforces exact page boundaries.
 
 - **Words per page:** The backend uses a constant of ~350 words per page (`WORDS_PER_PAGE=350`).
 - **Target pages:** By default, the system generates at least **10 pages**, but users can select between 3–40 pages via the UI.
@@ -73,7 +73,7 @@ To achieve this, the backend implements **page logic** that maps token/word coun
   - If markers are missing, the backend heuristically inserts breaks every ~350 words.
   - If the output is shorter than requested pages, a continuation request (appendices) is triggered.
   - If the output exceeds requested pages, it is trimmed to the target count.
-- **Font considerations:** The font size and line spacing are standardized in the backend CSS (`11pt/1.5` for HTML, `10.5pt/1.45` for Word export).  
+- **Font considerations:** The font size and line spacing are standardized in the backend CSS (`11pt/1.5` for HTML, `10.5pt/1.45` for Word export).
   This ensures that the **350 words per page approximation matches the actual printed/Word layout**, making page counts consistent with the 10+ page requirement.
 
 This ensures contracts are **long enough** to meet legal detail requirements, while respecting the user’s requested length.
@@ -112,6 +112,7 @@ This must be done before running `sam build`, `sam deploy`, or `sam logs`.
 
 ```bash
 cd backend
+
 sam build
 sam deploy --guided --profile firstread-dev
 ```
@@ -151,7 +152,6 @@ Deployable to Vercel or Amplify.
    ```
    Draft Terms of Service for a cloud cyber SaaS company based in New York
    ```
-
 3. Click **Generate**. The contract streams into the right-hand pane.
 4. Use the **Download** button to export as `.doc`.
 
