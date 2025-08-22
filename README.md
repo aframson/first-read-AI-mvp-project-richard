@@ -120,7 +120,7 @@ sam deploy --guided --profile firstread-dev
 
 After deployment, note:
 
-- API Gateway WebSocket endpoint
+- API Gateway WebSocket endpoint (eg. wss://your-api-id.execute-api.region.amazonaws.com/stage)
 - S3 bucket name
 - Lambda function ARN
 
