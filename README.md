@@ -106,13 +106,14 @@ This must be done before running `sam build`, `sam deploy`, or `sam logs`.
 
 ---
 
-## Deployment
+* [ ]  Deployment
 
 ### Backend (SAM)
 
 ```bash
-cd backend
-
+cd backend/src
+npm install 
+cd ..
 sam build
 sam deploy --guided --profile firstread-dev
 ```
