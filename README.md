@@ -76,7 +76,7 @@ This structure separates backend (serverless AI generation pipeline) from fronte
 
 One of the **core requirements** is that each generated contract must be **10+ pages**.To achieve this, the backend implements **page logic** that maps token/word counts to pages and enforces exact page boundaries.
 
-- **Words per page:** The backend uses a constant of ~350 words per page (`WORDS_PER_PAGE=350`).
+- **Words per page:** The backend uses a constant of ~510 words per page (`WORDS_PER_PAGE=550`).
 - **Target pages:** By default, the system generates at least **10 pages**, but users can select between 3–40 pages via the UI.
 - **Markers:** During streaming, the model is instructed to insert explicit markers (`<!--PAGE_BREAK-->`) between pages.
 - **Fallbacks:**
