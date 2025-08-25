@@ -1,93 +1,32 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { connectWS } from "../lib/ws";
-import {
-  History,
-  Play,
-  Square,
-  Download,
-  Loader2,
-  X,
-  Eye,
-  ChevronLeft,
-  ChevronRight
-} from "lucide-react";
 import Image from "next/image";
+import { connectWS } from "../lib/ws";
 
-/** Sandboxed HTML renderer using Shadow DOM to prevent style bleed */
-function ShadowHTML({ html }) {
-  const hostRef = useRef(null);
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    if (!host.shadowRoot) {
-      host.attachShadow({ mode: "open" });
-      const style = document.createElement("style");
-      const base = `
-        :host { all: initial; display: block; }
-        .doc-root { font: 10.5pt/1.45 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif; color:#111; }
-        .doc-root h1,.doc-root h2,.doc-root h3 { margin: 1.2em 0 .5em; }
-        .doc-root ol { margin: 0 0 0 1.2em; }
-        .doc-root .page-break { page-break-after: always; }
-        @page { margin: 1in; }
-        @media screen { .doc-root .page-break { border-top: 1px dashed #e5e7eb; margin: 28px 0; } }
-      `;
-      style.textContent = base;
-      const container = document.createElement("div");
-      container.className = "doc-root";
-      host.shadowRoot.appendChild(style);
-      host.shadowRoot.appendChild(container);
-      host._container = container;
-    }
-    if (host._container) host._container.innerHTML = html || "";
-  }, [html]);
-  return <div ref={hostRef} style={{ contain: "content" }} />;
-}
+/* NEW lib imports */
+import {
+  extractTitleFromHtml,
+  summarizePrompt,
+  sanitizeSavedHtmlDoc,
+  countWords,
+  splitPages
+} from "../lib/html";
+import { createChunkTransformer } from "../lib/streaming";
+import {
+  loadHistory,
+  saveHistory,
+  renameHistoryItemInArray
+} from "../lib/history";
+import { exportWordWithS3 } from "../lib/exportDoc";
 
-/* ---------- helpers ---------- */
-function stripTags(s = "") {
-  return s.replace(/<[^>]+>/g, "");
-}
-function extractTitleFromHtml(html = "") {
-  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  if (h1) return stripTags(h1[1]).trim().replace(/\s+/g, " ").slice(0, 90);
-  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (title)
-    return stripTags(title[1]).trim().replace(/\s+/g, " ").slice(0, 90);
-  const firstStrong = html.match(/<(h2|h3|strong)[^>]*>([\s\S]*?)<\/\1>/i);
-  if (firstStrong)
-    return stripTags(firstStrong[2]).trim().replace(/\s+/g, " ").slice(0, 90);
-  return "";
-}
-function summarizePrompt(p = "") {
-  const words = p.trim().split(/\s+/);
-  return (words.slice(0, 10).join(" ") + (words.length > 10 ? "…" : "")).trim();
-}
-
-/** Lightweight skeleton doc (headline bar + multiple lines) */
-function PreStreamSkeleton() {
-  return (
-    <div className="animate-pulse">
-      <div className="h-5 w-2/3 rounded bg-slate-200/90 mb-4" />
-      {Array.from({ length: 22 }).map((_, i) => (
-        <div
-          key={i}
-          className="h-3 rounded bg-slate-200/80 mb-2"
-          style={{ width: `${90 - (i % 6) * 8}%` }}
-        />
-      ))}
-      <div className="page-break my-6" />
-      {Array.from({ length: 16 }).map((_, i) => (
-        <div
-          key={`b-${i}`}
-          className="h-3 rounded bg-slate-200/80 mb-2"
-          style={{ width: `${92 - (i % 7) * 7}%` }}
-        />
-      ))}
-    </div>
-  );
-}
+/* Components */
+import TopBar from "./components/TopBar";
+import HistoryDesktop from "./components/HistoryDesktop";
+import HistoryMobile from "./components/HistoryMobile";
+import Composer from "./components/Composer";
+import DesktopPreviewPane from "./components/DesktopPreviewPane";
+import MobilePreviewOverlay from "./components/MobilePreviewOverlay";
 
 export default function Home() {
   const [prompt, setPrompt] = useState(
@@ -114,7 +53,7 @@ export default function Home() {
     return () => mq.removeEventListener?.("change", update);
   }, []);
 
-  // mobile overlays
+  // mobile overlay
   const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false);
 
   // collapsible history rail (desktop) / drawer (mobile)
@@ -127,9 +66,13 @@ export default function Home() {
 
   // target pages
   const [targetPages, setTargetPages] = useState(10);
+  const targetPagesRef = useRef(targetPages);
+  useEffect(() => {
+    targetPagesRef.current = targetPages;
+  }, [targetPages]);
+
   const MIN_ALLOWED_PAGES = 3;
   const MAX_ALLOWED_PAGES = 40;
-
   const WORDS_PER_PAGE = 350;
 
   // stall indicator (drafting)
@@ -137,7 +80,6 @@ export default function Home() {
   const lastDeltaAtRef = useRef(0);
   const STALL_MS = 1500;
 
-  // suggestions
   const suggestions = [
     "Draft an NDA between SaaS firms",
     "Consulting agreement (hourly)",
@@ -165,121 +107,31 @@ export default function Home() {
   const paneHasContent = isStreaming || html.trim().length > 0 || !!selected;
   const paneVisible = !paneClosed && paneHasContent;
 
-  // widths (desktop values)
+  // widths (desktop)
   const RIGHT_W = 840;
   const LEFT_OPEN_W = 256;
   const LEFT_CLOSED_W = 48;
 
-  // --- small utils
-  function countWords(s) {
-    return (s.match(/\b[\w’'-]+\b/g) || []).length;
-  }
+  // history rename wrapper -> uses lib helpers
   function renameHistoryItem(key, name) {
-    if (!key || !name) return;
     setHistory((h) => {
-      const next = h.map((it) => (it.key === key ? { ...it, name } : it));
-      localStorage.setItem("fr_history", JSON.stringify(next));
+      const next = renameHistoryItemInArray(h, key, name);
+      saveHistory(next);
       return next;
     });
   }
 
-  /** Remove any tags that could affect the host app (stream-safe, handles split chunks). */
-  function streamSanitize(chunk) {
-    if (!chunk) return "";
-    chunk = chunk
-      .replace(/<!doctype[^>]*>/gi, "")
-      .replace(/<\/?(html|body)[^>]*>/gi, "")
-      .replace(/<link[^>]*>/gi, "");
-
-    const openMatchers = [
-      { tag: "style", re: /<style\b[^>]*>/i, close: /<\/style>/i },
-      { tag: "script", re: /<script\b[^>]*>/i, close: /<\/script>/i },
-      { tag: "head", re: /<head\b[^>]*>/i, close: /<\/head>/i }
-    ];
-
-    let out = "";
-    let pos = 0;
-
-    if (blockedTagRef.current) {
-      const closeRe = openMatchers.find(
-        (m) => m.tag === blockedTagRef.current
-      ).close;
-      const closeMatch = chunk.match(closeRe);
-      if (!closeMatch) return "";
-      const idx = chunk.search(closeRe);
-      const closeLen = closeMatch[0].length;
-      pos = idx + closeLen;
-      blockedTagRef.current = null;
-    }
-
-    while (pos < chunk.length) {
-      let nextIdx = -1;
-      let which = null;
-      for (const m of openMatchers) {
-        const idx = chunk.slice(pos).search(m.re);
-        if (idx !== -1) {
-          const abs = pos + idx;
-          if (nextIdx === -1 || abs < nextIdx) {
-            nextIdx = abs;
-            which = m;
-          }
-        }
-      }
-      if (nextIdx === -1 || !which) {
-        out += chunk.slice(pos);
-        break;
-      }
-
-      out += chunk.slice(pos, nextIdx);
-      const rest = chunk.slice(nextIdx);
-      const closeMatch = rest.match(which.close);
-      if (closeMatch) {
-        const closeIdx = rest.search(which.close);
-        const skipLen = closeIdx + closeMatch[0].length;
-        pos = nextIdx + skipLen; // drop
-      } else {
-        blockedTagRef.current = which.tag;
-        pos = chunk.length; // drop tail
-      }
-    }
-    out = out.replace(/<\/(head|style|script)>/gi, "");
-    return out;
-  }
-
-  /** Convert model markers and enforce a hard display cap at targetPages. */
-  function transformChunkRespectingLimit(chunk) {
-    const sanitized = streamSanitize(chunk);
-    const parts = sanitized.split("<!--PAGE_BREAK-->");
-    const breaksInChunk = parts.length - 1;
-    const allowedBreaksRemaining = Math.max(
-      0,
-      targetPages - 1 - pageBreaksRef.current
-    );
-    if (allowedBreaksRemaining <= 0) return "";
-
-    const usedBreaks = Math.min(breaksInChunk, allowedBreaksRemaining);
-    let rebuilt = parts[0];
-    for (let i = 1; i <= usedBreaks; i++) {
-      rebuilt += '<div class="page-break"></div>' + parts[i];
-    }
-    if (breaksInChunk <= allowedBreaksRemaining) {
-      rebuilt += parts.slice(usedBreaks + 1).join("");
-    }
-    pageBreaksRef.current += usedBreaks;
-    setPages((p) => Math.max(p, pageBreaksRef.current + 1));
-    return rebuilt;
-  }
-
-  /** Sanitize full saved HTML doc (history) */
-  function sanitizeSavedHtmlDoc(text) {
-    return text
-      .replace(/<!doctype[^>]*>/gi, "")
-      .replace(/<\/?(html|head|body)[^>]*>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<link[^>]*>/gi, "")
-      .replace(/<!--PAGE_BREAK-->/g, '<div class="page-break"></div>');
-  }
+  /* ---------- streaming chunk transformer (uses latest target via ref) ---------- */
+  const transformChunkRespectingLimit = useMemo(
+    () =>
+      createChunkTransformer({
+        getTargetPages: () => targetPagesRef.current,
+        pageBreaksRef,
+        setPages,
+        blockedTagRef
+      }),
+    [] // safe: reads latest via getTargetPages() ref
+  );
 
   // Ask backend to presign a fresh URL for a history key
   function requestPresign(key) {
@@ -302,10 +154,7 @@ export default function Home() {
               const maybe = extractTitleFromHtml(next);
               if (maybe && maybe !== docTitle) setDocTitle(maybe);
 
-              const approx = Math.max(
-                1,
-                Math.floor(countWords(next) / WORDS_PER_PAGE) + 1
-              );
+              const approx = Math.max(1, Math.floor(countWords(next) / WORDS_PER_PAGE) + 1);
               if (approx > lastPageEstRef.current) {
                 lastPageEstRef.current = approx;
                 setPages((p) => Math.max(p, approx));
@@ -318,16 +167,13 @@ export default function Home() {
           setStalled(false);
 
           // cap visible pages
-          if (pageBreaksRef.current >= targetPages - 1) {
+          if (pageBreaksRef.current >= targetPagesRef.current - 1) {
             try {
               socketRef.current?.close(4001, "target-pages-reached");
             } catch {}
           }
         } else if (msg.type === "page") {
-          const val = Math.min(
-            Number(msg.value || 0),
-            Math.max(1, targetPages)
-          );
+          const val = Math.min(Number(msg.value || 0), Math.max(1, targetPagesRef.current));
           if (val > 0) {
             lastPageEstRef.current = Math.max(lastPageEstRef.current, val);
             setPages(val);
@@ -343,8 +189,7 @@ export default function Home() {
           setStalled(false);
           setDownloadUrl(msg.s3Url || null);
 
-          const derivedName =
-            extractTitleFromHtml(html) || summarizePrompt(prompt) || "Contract";
+          const derivedName = extractTitleFromHtml(html) || summarizePrompt(prompt) || "Contract";
           if (msg.key) {
             const item = {
               key: msg.key,
@@ -355,7 +200,7 @@ export default function Home() {
             };
             setHistory((h) => {
               const next = [item, ...h].slice(0, 50);
-              localStorage.setItem("fr_history", JSON.stringify(next));
+              saveHistory(next);
               return next;
             });
             setSelected(item);
@@ -365,12 +210,9 @@ export default function Home() {
           }
         } else if (msg.type === "presigned") {
           setHistory((h) => {
-            const next = h.map((it) =>
-              it.key === msg.key ? { ...it, s3Url: msg.s3Url } : it
-            );
-            localStorage.setItem("fr_history", JSON.stringify(next));
-            if (selected?.key === msg.key)
-              setSelected((s) => ({ ...s, s3Url: msg.s3Url }));
+            const next = h.map((it) => (it.key === msg.key ? { ...it, s3Url: msg.s3Url } : it));
+            saveHistory(next);
+            if (selected?.key === msg.key) setSelected((s) => ({ ...s, s3Url: msg.s3Url }));
             return next;
           });
           setPreviewLoading(false);
@@ -383,8 +225,7 @@ export default function Home() {
               const clean = sanitizeSavedHtmlDoc(text);
               setHtml(clean);
 
-              const title =
-                extractTitleFromHtml(text) || extractTitleFromHtml(clean);
+              const title = extractTitleFromHtml(text) || extractTitleFromHtml(clean);
               if (title) {
                 setDocTitle(title);
                 renameHistoryItem(selected.key, title);
@@ -419,7 +260,7 @@ export default function Home() {
 
   // initial load
   useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem("fr_history") || "[]");
+    const saved = loadHistory();
     setHistory(saved);
     initSocket(null);
     return () => {
@@ -429,14 +270,6 @@ export default function Home() {
       } catch {}
     };
   }, []);
-
-  // auto-size composer
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 180) + "px";
-  }, [prompt]);
 
   // stall detector (drafting)
   useEffect(() => {
@@ -504,18 +337,14 @@ export default function Home() {
 
     const ws = socketRef.current;
     const isOpen = ws && ws.readyState === WebSocket.OPEN;
-    const payload = { action: "start", prompt, targetPages };
+    const payload = { action: "start", prompt, targetPages: targetPagesRef.current };
     if (isOpen) ws.send(JSON.stringify(payload));
     else initSocket(payload);
   }
 
   function stop() {
     const ws = socketRef.current;
-    if (
-      ws &&
-      (ws.readyState === WebSocket.OPEN ||
-        ws.readyState === WebSocket.CONNECTING)
-    ) {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       try {
         ws.close(4000, "user-stop");
       } catch {}
@@ -558,8 +387,7 @@ export default function Home() {
         }
         const clean = sanitizeSavedHtmlDoc(txt);
         setHtml(clean);
-        const title =
-          extractTitleFromHtml(txt) || extractTitleFromHtml(clean) || it.name;
+        const title = extractTitleFromHtml(txt) || extractTitleFromHtml(clean) || it.name;
         if (title) {
           setDocTitle(title);
           renameHistoryItem(it.key, title);
@@ -584,98 +412,30 @@ export default function Home() {
     }
   }
 
-  function onKeyDown(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      start();
-    }
-  }
-
   function useSuggestion(text) {
     setPrompt(text);
     textareaRef.current?.focus();
   }
 
-  // Build full HTML (Word-friendly) for export when S3 HTML isn't available
-  function buildWordHtmlFromFragment(fragment) {
-    return [
-      '<html xmlns:o="urn:schemas-microsoft-com:office:office"',
-      '      xmlns:w="urn:schemas-microsoft-com:office:word"',
-      '      xmlns="http://www.w3.org/TR/REC-html40">',
-      '<head><meta charset="utf-8"><title>Contract</title>',
-      "<xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml>",
-      "<style>",
-      '  body { font: 10.5pt/1.45 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif; color:#111; }',
-      "  h1,h2,h3 { margin: 1.2em 0 .5em; }",
-      "  ol { margin: 0 0 0 1.2em; }",
-      "  .page-break { page-break-after: always; }",
-      "  @page { margin: 1in; }",
-      "</style></head><body>",
-      fragment,
-      "</body></html>"
-    ].join("");
-  }
+  // Export to MS Word (.doc) via lib
+  const exportWord = () =>
+    exportWordWithS3({
+      htmlFragment: html,
+      downloadUrl,
+      selectedS3Url: selected?.s3Url
+    });
 
-  // Export to MS Word (.doc)
-  async function exportWord() {
-    try {
-      let htmlToSave = "";
-      if (downloadUrl) {
-        const res = await fetch(downloadUrl, { cache: "no-store" });
-        htmlToSave = await res.text();
-      } else if (selected?.s3Url) {
-        const res = await fetch(selected.s3Url, { cache: "no-store" });
-        htmlToSave = await res.text();
-      } else if (html.trim().length) {
-        htmlToSave = buildWordHtmlFromFragment(html);
-      } else {
-        return;
-      }
-
-      const isFull = /<html[\s>]/i.test(htmlToSave);
-      if (!isFull) htmlToSave = buildWordHtmlFromFragment(htmlToSave);
-
-      const blob = new Blob([htmlToSave], {
-        type: "application/msword;charset=utf-8"
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = (extractTitleFromHtml(htmlToSave) || "contract") + ".doc";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error("Export Word failed", e);
-      alert("Could not export to Word. Please try again.");
-    }
-  }
-
-  const progressPct = Math.max(
-    0,
-    Math.min(100, (pages / Math.max(targetPages, 1)) * 100)
-  );
+  const progressPct = Math.max(0, Math.min(100, (pages / Math.max(targetPages, 1)) * 100));
 
   // computed paddings (desktop only)
   const padLeft = isMdUp ? (leftOpen ? LEFT_OPEN_W : LEFT_CLOSED_W) : 0;
   const padRight = isMdUp && paneVisible ? RIGHT_W : 0;
 
   /* ---------- PAGINATION (robust split) ---------- */
-  // Matches <!--PAGE_BREAK--> OR any <div class="page-break"...></div> (with spaces/attrs)
-  const PAGE_SPLIT_RE =
-    /(?:<!--\s*PAGE_BREAK\s*-->|<div\s+class=(?:"|')page-break(?:"|')\s*[^>]*>\s*<\/div>)/gi;
-
-  const pageHtmls = useMemo(() => {
-    if (!html) return [];
-    const parts = html.split(PAGE_SPLIT_RE);
-    // filter out pure whitespace fragments that can appear around breaks
-    return parts.map((p) => p.trim()).filter((p) => p.length > 0);
-  }, [html]);
-
+  const pageHtmls = useMemo(() => splitPages(html), [html]);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // clamp when page count changes; keep at last page while streaming
+  // clamp & auto-advance while streaming
   useEffect(() => {
     const total = Math.max(1, pageHtmls.length);
     if (currentPage > total) setCurrentPage(total);
@@ -683,209 +443,40 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageHtmls.length, isStreaming]);
 
-  const hasPrev = currentPage > 1;
-  const hasNext = currentPage < Math.max(1, pageHtmls.length);
   const visibleHtml =
-    pageHtmls.length > 0
-      ? pageHtmls[Math.min(currentPage - 1, pageHtmls.length - 1)]
-      : "";
-
-  function PaginationControls({ compact = false }) {
-    const total = Math.max(1, pageHtmls.length);
-    return (
-      <div
-        className={`flex items-center justify-center gap-2 ${
-          compact ? "py-2" : "py-3"
-        }`}
-      >
-        <button
-          onClick={() => hasPrev && setCurrentPage((p) => Math.max(1, p - 1))}
-          disabled={!hasPrev}
-          className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-sm ${
-            hasPrev ? "hover:bg-slate-50" : "opacity-50 cursor-not-allowed"
-          }`}
-          aria-label="Previous page"
-          type="button"
-        >
-          <ChevronLeft size={16} />
-          {!compact && <span>Prev</span>}
-        </button>
-
-        <div className="text-xs sm:text-sm text-slate-600 select-none tabular-nums">
-          Page{" "}
-          <span className="font-medium">{Math.min(currentPage, total)}</span> of{" "}
-          <span className="font-medium">{total}</span>
-        </div>
-
-        <button
-          onClick={() =>
-            hasNext && setCurrentPage((p) => Math.min(total, p + 1))
-          }
-          disabled={!hasNext}
-          className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-sm ${
-            hasNext ? "hover:bg-slate-50" : "opacity-50 cursor-not-allowed"
-          }`}
-          aria-label="Next page"
-          type="button"
-        >
-          {!compact && <span>Next</span>}
-          <ChevronRight size={16} />
-        </button>
-      </div>
-    );
-  }
+    pageHtmls.length > 0 ? pageHtmls[Math.min(currentPage - 1, pageHtmls.length - 1)] : "";
 
   return (
     <div className="h-screen bg-white text-slate-900">
       {/* globals */}
       <style jsx global>{`
-        .hide-scrollbar::-webkit-scrollbar {
-          display: none;
-        }
-        .hide-scrollbar {
-          -ms-overflow-style: none;
-          scrollbar-width: none;
-        }
-        .page-break {
-          border-top: 1px dashed #e5e7eb;
-          margin: 28px 0;
-        }
-        @media print {
-          .page-break {
-            page-break-after: always;
-          }
-        }
-        @keyframes shimmer {
-          0% {
-            background-position: 200% 0;
-          }
-          100% {
-            background-position: -200% 0;
-          }
-        }
-        @keyframes blink {
-          0%,
-          49% {
-            opacity: 1;
-          }
-          50%,
-          100% {
-            opacity: 0;
-          }
-        }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .page-break { border-top: 1px dashed #e5e7eb; margin: 28px 0; }
+        @media print { .page-break { page-break-after: always; } }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
       `}</style>
 
-      {/* LEFT rail (desktop only) */}
-      <aside
-        className="hidden md:block fixed left-0 top-0 bottom-0 border-r border-slate-200 bg-white transition-[width] duration-300 ease-in-out overflow-hidden"
-        style={{ width: leftOpen ? 256 : 48 }}
-        aria-label="History"
-      >
-        <div className="flex items-center justify-between px-2 py-3">
-          <button
-            onClick={() => setLeftOpen((o) => !o)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-slate-100"
-            title={leftOpen ? "Collapse history" : "Open history"}
-            aria-label={leftOpen ? "Collapse history" : "Open history"}
-            type="button"
-          >
-            <History size={18} />
-          </button>
-          {leftOpen && (
-            <div className="pr-3 font-semibold text-slate-700">History</div>
-          )}
-        </div>
-
-        {leftOpen && (
-          <div className="mt-1 h-[calc(100%-48px)] overflow-y-auto px-2 hide-scrollbar">
-            {history.length === 0 && (
-              <div className="text-sm text-slate-500 px-2">
-                No contracts yet.
-              </div>
-            )}
-            <div className="mt-2 flex flex-col gap-1.5">
-              {history.map((it) => (
-                <button
-                  key={it.key}
-                  title={it.name || it.prompt}
-                  onClick={() => openFromHistory(it)}
-                  className={[
-                    "w-full text-left rounded-md px-3 py-2 hover:bg-slate-50 overflow-hidden min-w-0",
-                    selected?.key === it.key
-                      ? "bg-blue-50/60 ring-1 ring-blue-200"
-                      : "bg-white"
-                  ].join(" ")}
-                  type="button"
-                >
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-semibold leading-tight whitespace-nowrap overflow-hidden text-ellipsis">
-                      {it.name || summarizePrompt(it.prompt) || "Contract"}
-                    </div>
-                    <div className="text-xs text-slate-500 mt-1 whitespace-nowrap">
-                      {new Date(it.ts).toLocaleString()}
-                    </div>
-                  </div>
-                </button>
-              ))}
-              <div className="h-8" />
-            </div>
-          </div>
-        )}
-      </aside>
+      {/* LEFT rail (desktop) */}
+      <HistoryDesktop
+        leftOpen={leftOpen}
+        setLeftOpen={setLeftOpen}
+        history={history}
+        selected={selected}
+        openFromHistory={openFromHistory}
+        summarizePrompt={summarizePrompt}
+      />
 
       {/* MOBILE: History drawer */}
-      {!isMdUp && leftOpen && (
-        <div className="fixed inset-0 z-40" aria-modal="true" role="dialog">
-          <div
-            className="absolute inset-0 bg-black/30"
-            onClick={() => setLeftOpen(false)}
-            aria-hidden="true"
-          />
-          <div className="absolute left-0 top-0 bottom-0 w-80 max-w-[85vw] bg-white shadow-xl border-r border-slate-200">
-            <div className="flex items-center justify-between px-3 py-3 border-b border-slate-200">
-              <div className="font-semibold">History</div>
-              <button
-                onClick={() => setLeftOpen(false)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-slate-100"
-                aria-label="Close history"
-                type="button"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="h-[calc(100%-48px)] overflow-y-auto p-2">
-              {history.length === 0 && (
-                <div className="text-sm text-slate-500 px-2 mt-2">
-                  No contracts yet.
-                </div>
-              )}
-              <div className="mt-2 flex flex-col gap-1.5">
-                {history.map((it) => (
-                  <button
-                    key={it.key}
-                    title={it.name || it.prompt}
-                    onClick={() => {
-                      openFromHistory(it);
-                      setLeftOpen(false);
-                    }}
-                    className="w-full text-left rounded-md px-3 py-2 hover:bg-slate-50 overflow-hidden min-w-0"
-                    type="button"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-semibold leading-tight whitespace-nowrap overflow-hidden text-ellipsis">
-                        {it.name || summarizePrompt(it.prompt) || "Contract"}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1 whitespace-nowrap">
-                        {new Date(it.ts).toLocaleString()}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-                <div className="h-8" />
-              </div>
-            </div>
-          </div>
-        </div>
+      {!isMdUp && (
+        <HistoryMobile
+          leftOpen={leftOpen}
+          setLeftOpen={setLeftOpen}
+          history={history}
+          openFromHistory={openFromHistory}
+          summarizePrompt={summarizePrompt}
+        />
       )}
 
       {/* MAIN (center) */}
@@ -893,506 +484,96 @@ export default function Home() {
         className="h-full transition-[padding] duration-300 ease-in-out"
         style={{ paddingLeft: padLeft, paddingRight: padRight }}
       >
-        {/* Top bar */}
-        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/80 backdrop-blur">
-          <div className="px-4 h-14 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {/* History toggle (always visible) */}
-              <button
-                onClick={() => setLeftOpen((o) => !o)}
-                className="inline-flex md:hidden h-9 w-9 items-center justify-center rounded-md hover:bg-slate-100"
-                title="History"
-                type="button"
-              >
-                <History size={18} />
-              </button>
-              <Image
-                src={"/logo.svg"}
-                alt="FirstRead"
-                width={100}
-                height={28}
-              />
-            </div>
-
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="hidden xs:block text-sm font-medium text-slate-700 max-w-[40vw] truncate">
-                {docTitle}
-              </div>
-              {/* status badge */}
-              <div
-                className={`text-xs px-2 py-1 rounded-full border ${
-                  isStreaming
-                    ? "bg-amber-50 border-amber-200 text-amber-700"
-                    : status === "connected"
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                    : status === "error"
-                    ? "bg-rose-50 border-rose-200 text-rose-700"
-                    : "bg-slate-50 border-slate-200 text-slate-600"
-                }`}
-              >
-                {status}
-              </div>
-              {/* pages badge */}
-              <div
-                className={`hidden sm:block text-xs px-2 py-1 rounded-full border ${
-                  pages >= targetPages
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                    : "bg-slate-50 border-slate-200 text-slate-600"
-                }`}
-                title="Approximate pages generated so far"
-              >
-                {pages} / {targetPages} pages
-              </div>
-
-              {/* Mobile preview toggle */}
-              <button
-                onClick={() => setMobilePreviewOpen(true)}
-                className="md:hidden inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-slate-100"
-                title="Open preview"
-                type="button"
-              >
-                <Eye size={18} />
-              </button>
-            </div>
-          </div>
-        </header>
+        <TopBar
+          docTitle={docTitle}
+          isStreaming={isStreaming}
+          status={status}
+          pages={pages}
+          targetPages={targetPages}
+          onToggleHistory={() => setLeftOpen((o) => !o)}
+          onOpenMobilePreview={() => setMobilePreviewOpen(true)}
+        />
 
         {/* Hero (kept minimal) */}
         <main className="mx-auto max-w-3xl px-5">
           <div className="w-full flex items-start justify-center mt-16 mb-24">
             <div className="text-center text-slate-500 mt-[20vh]">
-              <Image
-                src={"/logo.svg"}
-                alt="FirstRead"
-                width={250}
-                height={80}
-              />
+              <Image src={"/logo.svg"} alt="FirstRead" width={250} height={80} />
             </div>
           </div>
         </main>
 
-        {/* Composer (fixed) */}
-        <div
-          className="fixed bottom-0 left-0 right-0 z-10 pointer-events-none transition-[padding] duration-300 ease-in-out"
-          style={{ paddingLeft: padLeft, paddingRight: padRight }}
-        >
-          <div className="pointer-events-none bg-gradient-to-t from-white via-white/95 to-transparent h-20" />
-          {/* badges */}
-          <div className="mx-auto max-w-3xl px-4 pb-8 pointer-events-auto">
-            <div className="flex items-center justify-between gap-2">
-              <div className="grid grid-cols-2 sm:grid-cols-2 gap-2 flex-1">
-                {suggestions.slice(0, 9).map((s, i) => (
-                  <button
-                    key={i}
-                    onClick={() => useSuggestion(s)}
-                    className="inline-flex items-center justify-center text-center rounded-[10px] border border-slate-200 px-3 py-2 text-[12px] text-slate-600 hover:bg-slate-50"
-                    title="Use this suggestion"
-                    type="button"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Composer box */}
-          <div className="mx-auto max-w-3xl px-5 pb-8 pointer-events-auto">
-            <div className="rounded-[16px] border border-slate-200 shadow-lg bg-white px-2 py-2 flex items-end gap-2 focus-within:ring-2 focus-within:ring-blue-300">
-              <textarea
-                ref={textareaRef}
-                rows={1}
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={onKeyDown}
-                placeholder="Describe the contract you need…"
-                className="min-h-[40px] max-h-[180px] flex-1 resize-none rounded-[16px] px-3 py-2 outline-none placeholder:text-slate-400 overflow-y-auto hide-scrollbar"
-              />
-              <div className="flex items-center gap-1 pb-1 pr-1">
-                {/* Pages selector (hidden on xs for space) */}
-                <div className="hidden sm:flex items-center gap-2 mr-1">
-                  <span className="text-[12px] text-slate-600">Pages</span>
-                  <div className="inline-flex items-center rounded-full border border-slate-200 overflow-hidden">
-                    <button
-                      onClick={() =>
-                        setTargetPages((p) =>
-                          Math.max(MIN_ALLOWED_PAGES, p - 1)
-                        )
-                      }
-                      className="px-2 py-1 text-slate-700 hover:bg-slate-50"
-                      title="Decrease pages"
-                      aria-label="Decrease pages"
-                      type="button"
-                    >
-                      −
-                    </button>
-                    <input
-                      type="number"
-                      min={MIN_ALLOWED_PAGES}
-                      max={MAX_ALLOWED_PAGES}
-                      value={targetPages}
-                      onChange={(e) => {
-                        const n = parseInt(e.target.value || "0", 10);
-                        if (!Number.isNaN(n)) {
-                          setTargetPages(
-                            Math.min(
-                              MAX_ALLOWED_PAGES,
-                              Math.max(MIN_ALLOWED_PAGES, n)
-                            )
-                          );
-                        }
-                      }}
-                      className="w-12 text-center text-[12px] outline-none py-1"
-                      aria-label="Target pages"
-                    />
-                    <button
-                      onClick={() =>
-                        setTargetPages((p) =>
-                          Math.min(MAX_ALLOWED_PAGES, p + 1)
-                        )
-                      }
-                      className="px-2 py-1 text-slate-700 hover:bg-slate-50"
-                      title="Increase pages"
-                      aria-label="Increase pages"
-                      type="button"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-
-                <button
-                  onClick={start}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white hover:bg-blue-700 transition"
-                  title="Generate"
-                  type="button"
-                >
-                  <Play size={16} />
-                </button>
-                {isStreaming && (
-                  <button
-                    onClick={stop}
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 hover:bg-slate-50 transition"
-                    title="Stop"
-                    type="button"
-                  >
-                    <Square size={16} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-2 text-center text-[11px] text-slate-500">
-              WS:{" "}
-              <code className="font-mono">
-                {process.env.NEXT_PUBLIC_WS_URL || "MISSING_WS_URL"}
-              </code>
-            </div>
-          </div>
-        </div>
+        <Composer
+          padLeft={padLeft}
+          padRight={padRight}
+          suggestions={suggestions}
+          useSuggestion={useSuggestion}
+          prompt={prompt}
+          setPrompt={setPrompt}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              start();
+            }
+          }}
+          targetPages={targetPages}
+          setTargetPages={setTargetPages}
+          MIN_ALLOWED_PAGES={MIN_ALLOWED_PAGES}
+          MAX_ALLOWED_PAGES={MAX_ALLOWED_PAGES}
+          start={start}
+          stop={stop}
+          isStreaming={isStreaming}
+        />
       </div>
 
-      {/* RIGHT: editor (desktop drafting/history) */}
-      <section
-        className="hidden md:flex fixed right-0 top-0 bottom-0 border-l border-slate-200 bg-white overflow-hidden transition-all duration-300 ease-in-out"
-        style={{
-          width: paneVisible ? RIGHT_W : 0,
-          opacity: paneVisible ? 1 : 0,
-          pointerEvents: paneVisible ? "auto" : "none"
-        }}
-        aria-hidden={!paneVisible}
-      >
-        <div className="flex h-full w-full flex-col">
-          <div className="flex items-center justify-between border-b border-slate-200 h-12 px-5">
-            <span className="font-medium truncate max-w-[60%]">{docTitle}</span>
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-2 text-xs text-slate-600">
-                {status === "starting" && (
-                  <Loader2 size={14} className="animate-spin" />
-                )}
-                {status}
-              </span>
-              <span
-                className="text-xs px-2 py-1 rounded-full border bg-slate-50 border-slate-200 text-slate-600"
-                title="Approximate pages"
-              >
-                {pages} / {targetPages} pages
-              </span>
-              <button
-                onClick={closePane}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md hover:bg-slate-100"
-                title="Close"
-                type="button"
-              >
-                <X size={16} />
-              </button>
-            </div>
-          </div>
-
-          {/* progress rail */}
-          <div className="px-5 pt-2">
-            <div className="h-1 w-full rounded bg-slate-100 overflow-hidden">
-              <div
-                className="h-full bg-blue-500 transition-[width] duration-300"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-          </div>
-
-          {/* pagination controls (sticky inside preview) */}
-          <div className="px-5">
-            <div className="sticky top-0 z-10 bg-white/85 backdrop-blur rounded-b-md">
-              {pageHtmls.length > 0 && <PaginationControls />}
-            </div>
-          </div>
-
-          <div
-            ref={docScrollRef}
-            onScroll={onRightPaneScroll}
-            className={`relative flex-1 overflow-auto p-6 pb-24 ${
-              showPreStreamSkeleton
-                ? "bg-gradient-to-r from-white via-[#f7f9ff] to-white bg-[length:200%_100%] animate-[shimmer_1.6s_linear_infinite]"
-                : "bg-white"
-            } hide-scrollbar`}
-            style={{ scrollbarGutter: "stable", contain: "layout paint size" }}
-            aria-live="polite"
-          >
-            {showPreStreamSkeleton ? (
-              <PreStreamSkeleton />
-            ) : selected && previewLoading ? (
-              <PreStreamSkeleton />
-            ) : (
-              <>
-                {/* Render only the current page */}
-                {visibleHtml && <ShadowHTML html={visibleHtml} />}
-
-                {isStreaming && visibleHtml && stalled && (
-                  <div className="mt-6 flex items-center gap-2 text-xs text-slate-500">
-                    <Loader2 size={14} className="animate-spin" />
-                    Waiting for more…
-                  </div>
-                )}
-
-                {isStreaming && visibleHtml && (
-                  <div className="absolute right-6 bottom-6 h-5 w-[2px] bg-slate-800/70 animate-[blink_1s_steps(2,start)_infinite] pointer-events-none" />
-                )}
-
-                {!isStreaming && !html && selected?.s3Url && (
-                  <div className="text-sm text-slate-500">
-                    We couldn’t show a preview here.{" "}
-                    <a
-                      className="underline"
-                      href={selected.s3Url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open the original
-                    </a>
-                    .
-                  </div>
-                )}
-
-                {!isStreaming && !html && !selected?.s3Url && (
-                  <div className="text-sm text-slate-500">
-                    Select a contract from history or start a new generation.
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* footer actions */}
-          <div className="relative z-30 border-t border-slate-200 bg-white/90 backdrop-blur px-6 py-3 pointer-events-auto">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <div className="text-[12px] text-slate-600">
-                ~{pages} page{pages === 1 ? "" : "s"} generated
-              </div>
-              {/* duplicate compact pagination in footer for convenience */}
-              {pageHtmls.length > 0 && (
-                <div className="sm:order-last">
-                  <PaginationControls compact />
-                </div>
-              )}
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  onClick={exportWord}
-                  disabled={
-                    !html.trim().length && !downloadUrl && !selected?.s3Url
-                  }
-                  className={`inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 ${
-                    !html.trim().length && !downloadUrl && !selected?.s3Url
-                      ? "opacity-50 cursor-not-allowed"
-                      : "cursor-pointer"
-                  }`}
-                  title="Download (.doc)"
-                  type="button"
-                >
-                  <Download size={16} /> Download
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <DesktopPreviewPane
+        paneVisible={paneVisible}
+        RIGHT_W={RIGHT_W}
+        docTitle={docTitle}
+        status={status}
+        pages={pages}
+        targetPages={targetPages}
+        closePane={closePane}
+        progressPct={progressPct}
+        showPreStreamSkeleton={showPreStreamSkeleton}
+        selected={selected}
+        previewLoading={previewLoading}
+        visibleHtml={visibleHtml}
+        isStreaming={isStreaming}
+        stalled={stalled}
+        html={html}
+        downloadUrl={downloadUrl}
+        exportWord={exportWord}
+        pageHtmls={pageHtmls}
+        currentPage={currentPage}
+        setCurrentPage={setCurrentPage}
+        onRightPaneScroll={onRightPaneScroll}
+        docScrollRef={docScrollRef}
+      />
 
       {/* MOBILE: Preview overlay */}
-      {!isMdUp && mobilePreviewOpen && (
-        <div className="fixed inset-0 z-40" aria-modal="true" role="dialog">
-          <div
-            className="absolute inset-0 bg-black/30"
-            onClick={() => setMobilePreviewOpen(false)}
-            aria-hidden="true"
-          />
-          <div className="absolute inset-x-0 bottom-0 top-0 bg-white shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between border-b border-slate-200 h-12 px-4">
-              <span className="font-medium truncate max-w-[60%]">
-                {docTitle}
-              </span>
-              <div className="flex items-center gap-3">
-                <span className="inline-flex items-center gap-2 text-xs text-slate-600">
-                  {(status === "starting" || status === "generating") && (
-                    <Loader2 size={14} className="animate-spin" />
-                  )}
-                  {status}
-                </span>
-                {/* STOP during streaming (mobile) */}
-                {(status === "starting" || status === "generating") && (
-                  <button
-                    onClick={stop}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs font-medium hover:bg-slate-50 active:scale-[.98]"
-                    title="Stop"
-                    aria-label="Stop generation"
-                    type="button"
-                  >
-                    <Square size={14} />
-                    Stop
-                  </button>
-                )}
-                <button
-                  onClick={() => setMobilePreviewOpen(false)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md hover:bg-slate-100"
-                  title="Close"
-                  type="button"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            {/* progress */}
-            <div className="px-4 pt-2">
-              <div className="h-1 w-full rounded bg-slate-100 overflow-hidden">
-                <div
-                  className={`h-full transition-[width] duration-300 ${
-                    showPreStreamSkeleton
-                      ? "bg-slate-200 animate-pulse"
-                      : "bg-blue-500"
-                  }`}
-                  style={{
-                    width: showPreStreamSkeleton ? "35%" : `${progressPct}%`
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* pagination controls (mobile) */}
-            <div className="px-4">
-              <div className="sticky top-0 z-10 bg-white/85 backdrop-blur rounded-b-md">
-                {pageHtmls.length > 0 && <PaginationControls />}
-              </div>
-            </div>
-
-            <div
-              ref={docScrollRef}
-              onScroll={onRightPaneScroll}
-              className={`relative flex-1 overflow-auto p-4 pb-24 hide-scrollbar ${
-                showPreStreamSkeleton
-                  ? "bg-gradient-to-r from-white via-[#f7f9ff] to-white bg-[length:200%_100%] animate-[shimmer_1.6s_linear_infinite]"
-                  : "bg-white"
-              }`}
-              style={{
-                scrollbarGutter: "stable",
-                contain: "layout paint size"
-              }}
-              aria-live="polite"
-            >
-              {showPreStreamSkeleton ? (
-                <PreStreamSkeleton />
-              ) : selected && previewLoading ? (
-                <PreStreamSkeleton />
-              ) : (
-                <>
-                  {/* Render only the current page */}
-                  {visibleHtml && <ShadowHTML html={visibleHtml} />}
-
-                  {isStreaming && visibleHtml && stalled && (
-                    <div className="mt-6 flex items-center gap-2 text-xs text-slate-500">
-                      <Loader2 size={14} className="animate-spin" />
-                      Waiting for more…
-                    </div>
-                  )}
-
-                  {isStreaming && visibleHtml && (
-                    <div className="absolute right-4 bottom-4 h-5 w-[2px] bg-slate-800/70 animate-[blink_1s_steps(2,start)_infinite] pointer-events-none" />
-                  )}
-
-                  {!isStreaming && !html && selected?.s3Url && (
-                    <div className="text-sm text-slate-500">
-                      We couldn’t show a preview here.{" "}
-                      <a
-                        className="underline"
-                        href={selected.s3Url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open the original
-                      </a>
-                      .
-                    </div>
-                  )}
-
-                  {!isStreaming && !html && !selected?.s3Url && (
-                    <div className="text-sm text-slate-500">
-                      Select a contract from history or start a new generation.
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* footer actions */}
-            <div className="border-t border-slate-200 bg-white/90 backdrop-blur px-4 py-3">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                <div className="text-[12px] text-slate-600">
-                  ~{pages} page{pages === 1 ? "" : "s"} generated
-                </div>
-                {pageHtmls.length > 0 && (
-                  <div className="">
-                    <PaginationControls compact />
-                  </div>
-                )}
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    onClick={exportWord}
-                    disabled={
-                      !html.trim().length && !downloadUrl && !selected?.s3Url
-                    }
-                    className={`inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 ${
-                      !html.trim().length && !downloadUrl && !selected?.s3Url
-                        ? "opacity-50 cursor-not-allowed"
-                        : "cursor-pointer"
-                    }`}
-                    title="Download (.doc)"
-                    type="button"
-                  >
-                    <Download size={16} /> Download
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <MobilePreviewOverlay
+        isOpen={!isMdUp && mobilePreviewOpen}
+        closeOverlay={() => setMobilePreviewOpen(false)}
+        docTitle={docTitle}
+        status={status}
+        stop={stop}
+        showPreStreamSkeleton={showPreStreamSkeleton}
+        progressPct={progressPct}
+        pageHtmls={pageHtmls}
+        currentPage={currentPage}
+        setCurrentPage={setCurrentPage}
+        docScrollRef={docScrollRef}
+        onRightPaneScroll={onRightPaneScroll}
+        visibleHtml={visibleHtml}
+        isStreaming={isStreaming}
+        stalled={stalled}
+        html={html}
+        selected={selected}
+        downloadUrl={downloadUrl}
+        exportWord={exportWord}
+        pages={pages}
+      />
     </div>
   );
 }
