@@ -109,12 +109,12 @@ export default function MobilePreviewOverlay({
               {/* Render only the current page */}
               {visibleHtml && <ShadowHTML html={visibleHtml} />}
 
-              {isStreaming && visibleHtml && stalled && (
+              {/* {isStreaming && visibleHtml && stalled && (
                 <div className="mt-6 flex items-center gap-2 text-xs text-slate-500">
                   <Loader2 size={14} className="animate-spin" />
                   Waiting for more…
                 </div>
-              )}
+              )} */}
 
               {isStreaming && visibleHtml && (
                 <div className="absolute right-4 bottom-4 h-5 w-[2px] bg-slate-800/70 animate-[blink_1s_steps(2,start)_infinite] pointer-events-none" />
