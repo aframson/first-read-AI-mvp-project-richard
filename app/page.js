@@ -167,11 +167,11 @@ export default function Home() {
           setStalled(false);
 
           // cap visible pages
-          if (pageBreaksRef.current >= targetPagesRef.current - 1) {
-            try {
-              socketRef.current?.close(4001, "target-pages-reached");
-            } catch {}
-          }
+          // if (pageBreaksRef.current >= targetPagesRef.current - 1) {
+          //   try {
+          //     socketRef.current?.close(4001, "target-pages-reached");
+          //   } catch {}
+          // }
         } else if (msg.type === "page") {
           const val = Math.min(Number(msg.value || 0), Math.max(1, targetPagesRef.current));
           if (val > 0) {
@@ -206,7 +206,12 @@ export default function Home() {
             setSelected(item);
             setPreviewLoading(false);
             if (derivedName) setDocTitle(derivedName);
-            if (!isMdUp) setMobilePreviewOpen(true);
+            if (!isMdUp) {
+             setMobilePreviewOpen(true);
+           } else {
+             // auto-open history rail on desktop
+             setLeftOpen(true);
+           }
           }
         } else if (msg.type === "presigned") {
           setHistory((h) => {
