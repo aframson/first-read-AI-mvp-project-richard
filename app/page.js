@@ -496,7 +496,7 @@ export default function Home() {
 
         {/* Hero (kept minimal) */}
         <main className="mx-auto max-w-3xl px-5">
-          <div className="w-full flex items-start justify-center mt-16 mb-24">
+          <div className="w-full flex items-start justify-center mt-3 mb-24">
             <div className="text-center text-slate-500 mt-[20vh]">
               <Image src={"/logo.svg"} alt="FirstRead" width={250} height={80} />
             </div>
