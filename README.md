@@ -199,7 +199,48 @@ Output:
 - Ownership & Content clauses with depth and examples
 - Exportable to Word
 
+
+## Improvements
+
+Over the course of development, several areas for improvement have been identified to make the system more robust, consistent, and user-friendly. These touch on page control, content quality, model experimentation, and resilience.
+
+### 1. Words-per-Page Enforcement
+
+Originally, page counts were loosely based on estimated word counts (≈350–550 words). This caused inconsistencies such as pages with **340 words or 590 words**, leading to uneven document lengths.We improved this by:
+
+- Implementing **strict word-budget slicing**: every page is capped at the configured `WORDS_PER_PAGE` (default 550).
+- Introducing **precise HTML tokenization** that splits content while respecting tags, ensuring pages break at logical points without corrupting the markup.
+- Guaranteeing that all generated contracts have a **consistent number of words per page**, making output more predictable and aligned with the “10+ pages” requirement.
+
+### 2. Content Quality Improvements
+
+While initial drafts were structurally correct, content depth varied. Improvements included:
+
+- Adding **top-up generation** logic: if a document does not reach the minimum word/page requirement, the system asks the model to generate **appendices, elaborations, or examples** to fill gaps.
+- Enforcing **structured depth** in clauses (e.g., detailed Ownership & Content subsections, Acceptable Use examples, etc.) so the model outputs more comprehensive text.
+- Normalizing output styles with **consistent typography and CSS** for readability in both web previews and Word exports.
+
+### 3. Experimenting with Different Models
+
+Different OpenAI models handle legal-style generation differently:
+
+- **Larger models** (e.g., GPT-4.1) provide richer content but sometimes overshoot token budgets, leading to **empty or truncated pages**.
+- **Smaller/faster models** generate text more efficiently but may produce less detailed legal clauses.
+  To mitigate this:
+- We built a **retry-and-fallback system** with exponential backoff.
+- If the primary model fails, the system retries or falls back to a more conservative model while preserving user prompts and target pages.
+- This ensures content is generated reliably even under latency spikes or API quota issues.
+
+### 4. Other Improvements
+
+- **Resilience**: Added robust error handling for API failures, token overruns, and context length errors. The system now trims conversation context intelligently and retries safely.
+- **User Experience**: Skeleton loaders were added to prevent empty previews during generation. Pagination controls allow users to **browse one page at a time**, matching the strict word budgets.
+- **History Management**: Documents are saved in S3 with presigned links, and a lightweight local history (using localStorage) enables quick retrieval even without authentication.
+- **Export Fidelity**: Word export templates now ensure that fonts and spacing match the enforced word-per-page settings, keeping visual consistency between the web preview and `.doc` downloads.
+
 ---
+
+These improvements make the system **more consistent, reliable, and user-friendly**, while ensuring compliance with the MVP requirement of generating well-structured 10+ page contracts.
 
 ## Credits
 
