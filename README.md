@@ -18,26 +18,36 @@ The repository is organized as follows:
 
 ```
 .
-├── backend/                # AWS Lambda + SAM backend
+├── backend/                     # AWS Lambda + SAM backend
 │   ├── src/
-│   │   ├── generate.mjs    # Lambda entrypoint for contract generation
-│   │   ├── prompts.mjs     # Centralized system prompts for quality/legal structure
-│   │   └── ...             # Other backend utilities (helpers, post, etc.)
-│   ├── template.yaml       # SAM template (defines Lambda, S3, API Gateway, IAM roles)
-│   └── README.md           # Backend-specific notes
+│   │   ├── generate.mjs         # Lambda entrypoint for contract generation
+│   │   ├── prompts.mjs          # Centralized system prompts for quality/legal structure
+│   │   └── ...                  # Other backend utilities (helpers, post, etc.)
+│   ├── template.yaml            # SAM template (defines Lambda, S3, API Gateway, IAM roles)
+│   └── README.md                # Backend-specific notes
 │
-├── app/                    # Next.js frontend (Vercel-ready)
-│   ├── page.js             # Main UI (editor, streaming, history)
-│   └── layout.js           # Root layout
+├── app/                         # Next.js frontend (Vercel-ready, App Router)
+│   ├── page.js                  # Main page that wires together components + logic
+│   ├── layout.js                # Root layout
+│   └── components/              # Organized UI components
+│       ├── TopBar.js
+│       ├── HistoryDesktop.js
+│       ├── HistoryMobile.js
+│       ├── Composer.js
+│       ├── DesktopPreviewPane.js
+│       └── MobilePreviewOverlay.js
 │
-├── lib/
-│   └── ws.js               # WebSocket connection helper
+├── lib/                         # Shared frontend logic/helpers
+│   ├── ws.js                    # WebSocket connection helper
+│   ├── history.js               # LocalStorage-based history utils
+│   ├── sanitize.js              # HTML sanitize & streaming clean-up helpers
+│   └── pagination.js            # Pagination split and helpers
 │
 ├── public/
-│   └── logo.svg            # Branding logo
+│   └── logo.svg                 # Branding logo
 │
-├── README.md               # Main project documentation
-└── package.json            # Root dependencies and scripts
+├── README.md                    # Main project documentation
+└── package.json                 # Root dependencies and scripts
 ```
 
 This structure separates backend (serverless AI generation pipeline) from frontend (real-time contract drafting UI).
