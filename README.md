@@ -100,7 +100,7 @@ aws configure sso --profile firstread-dev
 
 You’ll be prompted for:
 
-- **SSO start URL**
+- **SSO start URL** (eg. https://mycompany.awsapps.com/start ) , you can find this in your AWS console at IAM Identity Center
 - **SSO region**
 - **Account ID**
 - **Role name**
