@@ -220,6 +220,8 @@ While initial drafts were structurally correct, content depth varied. Improvemen
 - Enforcing **structured depth** in clauses (e.g., detailed Ownership & Content subsections, Acceptable Use examples, etc.) so the model outputs more comprehensive text.
 - Normalizing output styles with **consistent typography and CSS** for readability in both web previews and Word exports.
 
+
+
 ### 3. Experimenting with Different Models
 
 Different OpenAI models handle legal-style generation differently:
